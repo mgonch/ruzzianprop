@@ -12,17 +12,20 @@ twitter:
 
 bot_detection:
   # Weight of each signal in the final bot score (must sum to 1.0)
+  # Disinformation/state-media signals carry higher weight because
+  # human-operated state actors evade all automation-based signals.
   weights:
-    account_age: 0.10
-    username_pattern: 0.08
-    profile_completeness: 0.08
-    tweet_frequency: 0.10
-    retweet_ratio: 0.10
-    follower_ratio: 0.10
-    content_similarity: 0.15
-    posting_time_pattern: 0.09
-    coordinated_behavior: 0.12
-    disinformation_keywords: 0.08
+    account_age: 0.08
+    username_pattern: 0.06
+    profile_completeness: 0.06
+    tweet_frequency: 0.08
+    retweet_ratio: 0.08
+    follower_ratio: 0.08
+    content_similarity: 0.12
+    posting_time_pattern: 0.07
+    coordinated_behavior: 0.10
+    disinformation_keywords: 0.13
+    state_media_links: 0.14   # strongest single signal for state actors
 
   # Thresholds
   bot_threshold: 0.60        # Score >= this => likely bot
@@ -30,6 +33,8 @@ bot_detection:
 
 disinformation:
   # Russian state-linked disinformation narrative keywords
+  # Sources: EU DisinfoLab, DFRLab, Stanford Internet Observatory,
+  #          IRA troll dataset, EU vs Disinfo database
   keywords:
     nato_narratives:
       - "NATO expansion"
@@ -37,34 +42,66 @@ disinformation:
       - "NATO provocation"
       - "NATO threat"
       - "NATO lies"
-    ukraine_narratives:
-      - "Zelensky nazi"
+      - "NATO war"
+      - "provocations by NATO"
+      - "NATO eastward"
+    ukraine_war_kremlin_framing:
+      - "special military operation"
+      - "SMO"
+      - "denazification"
+      - "demilitarisation of Ukraine"
       - "Kiev regime"
       - "Kyiv regime"
-      - "denazification"
+      - "Zelensky nazi"
+      - "Zelensky puppet"
+      - "puppet regime in Kiev"
       - "Ukraine biolabs"
       - "Ukraine bioweapons"
       - "ukrainian nazis"
       - "azov battalion"
       - "Ukraine coup"
+      - "Anglo-Saxons"
+      - "collective West"
+      - "Russia has the right"
+      - "Nordstream was Ukraine"
+      - "Nordstream sabotage by US"
+    state_actor_amplification:
+      - "RT reports"
+      - "Sputnik reports"
+      - "TASS reports"
+      - "as RT said"
+      - "according to RT"
+      - "according to Sputnik"
     election_narratives:
       - "stolen election"
       - "election fraud"
       - "rigged election"
       - "deep state"
       - "globalist"
+      - "great replacement"
+      - "white genocide"
+      - "replacement migration"
     western_narratives:
       - "western propaganda"
       - "mainstream media lies"
       - "fake news media"
       - "george soros"
       - "nwo globalist"
+      - "globalist agenda"
+      - "western hegemony"
+      - "US hegemony"
+      - "American imperialism"
+      - "Anglo-Saxon imperialism"
     ira_hashtags:
       - "#NoWar"
       - "#IStandWithPutin"
       - "#RussiaUkraineWar"
       - "#NATOterrorists"
       - "#GlobohomoAgenda"
+      - "#NAFO"
+      - "#SlavaRossii"
+      - "#ZWorld"
+      - "#IStandWithRussia"
 
   # Known Russian state media domains
   state_media_domains:

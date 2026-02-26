@@ -34,6 +34,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.detectors.bot_detector import BotDetector
+from src.detectors.disinformation_detector import DisinformationDetector
 
 logger = logging.getLogger(__name__)
 
@@ -54,9 +55,10 @@ _CSS = """
 .metric-label { font-size: 0.85rem !important; }
 
 /* Classification badge */
-.badge-bot      { background:#ef4444; color:#fff; padding:4px 14px; border-radius:9999px; font-weight:700; }
-.badge-suspected{ background:#f59e0b; color:#fff; padding:4px 14px; border-radius:9999px; font-weight:700; }
-.badge-human    { background:#22c55e; color:#fff; padding:4px 14px; border-radius:9999px; font-weight:700; }
+.badge-bot         { background:#ef4444; color:#fff; padding:4px 14px; border-radius:9999px; font-weight:700; }
+.badge-suspected   { background:#f59e0b; color:#fff; padding:4px 14px; border-radius:9999px; font-weight:700; }
+.badge-human       { background:#22c55e; color:#fff; padding:4px 14px; border-radius:9999px; font-weight:700; }
+.badge-state_actor { background:#dc2626; color:#fff; padding:4px 14px; border-radius:9999px; font-weight:700; }
 
 /* Source tag */
 .source-ml        { font-size:0.75rem; color:#6366f1; }
@@ -281,6 +283,13 @@ def analyse(user: dict, tweets: list[dict], config: dict) -> dict:
         "features": {},
     }
 
+    # Disinformation analysis – separate threat model from bot automation
+    dis_detector = DisinformationDetector(config=config)
+    dis_summary = dis_detector.analyse_account(records)
+    dis_score = dis_summary.get("avg_dis_score", 0.0)
+    result["dis"] = dis_summary
+    result["dis_score"] = dis_score
+
     # ML
     ml_model, ml_loaded = load_ml_model()
     if ml_loaded:
@@ -321,6 +330,9 @@ def analyse(user: dict, tweets: list[dict], config: dict) -> dict:
         result["classification"] = "bot"
     elif combined >= 0.40:
         result["classification"] = "suspected"
+    elif dis_score >= 0.35:
+        # Human-operated account posting disinformation: not a bot, but not clean
+        result["classification"] = "state_actor"
     else:
         result["classification"] = "human"
 
@@ -336,13 +348,23 @@ def render_results(result: dict, user: dict, tweets: list[dict]) -> None:
     combined_pct = result["combined_pct"]
     hs = result["heuristic"]
     h_pct = round(float(hs.get("bot_score", 0.0)) * 100, 1)
+    dis_score = result.get("dis_score", 0.0)
+    dis_pct = round(dis_score * 100, 1)
+    dis_color = "#ef4444" if dis_pct >= 60 else "#f59e0b" if dis_pct >= 35 else "#64748b"
 
     # ── Header ───────────────────────────────────────────────────────────────
     username = user.get("username", "unknown")
     badge_cls = f"badge-{clf}"
-    badge_label = clf.upper()
-    color_map = {"bot": "#ef4444", "suspected": "#f59e0b", "human": "#22c55e"}
-    gauge_color = color_map[clf]
+    _badge_labels = {
+        "bot": "BOT", "suspected": "SUSPECTED",
+        "human": "HUMAN", "state_actor": "STATE ACTOR",
+    }
+    badge_label = _badge_labels.get(clf, clf.upper())
+    color_map = {
+        "bot": "#ef4444", "suspected": "#f59e0b",
+        "human": "#22c55e", "state_actor": "#dc2626",
+    }
+    gauge_color = color_map.get(clf, "#22c55e")
 
     st.markdown(f"""
     <div style="display:flex; align-items:center; gap:16px; margin-bottom:8px;">
@@ -352,15 +374,30 @@ def render_results(result: dict, user: dict, tweets: list[dict]) -> None:
     </div>
     """, unsafe_allow_html=True)
 
+    if clf == "state_actor":
+        st.warning(
+            "**State actor / influence operator detected.**  \n"
+            "This account shows low bot-automation signals but was flagged for disinformation "
+            "content. Human-operated state-affiliated accounts deliberately avoid bot-like "
+            "behaviour — they post manually to evade detection. A high **Disinfo Score** is "
+            "the primary signal here.",
+            icon="🕵️",
+        )
+
     # ── Gauges row ────────────────────────────────────────────────────────────
     if result["ml_available"] and result["ml"]:
-        g_col1, g_col2, g_col3 = st.columns(3)
+        g_col1, g_col2, g_col3, g_col4 = st.columns(4)
         with g_col1:
             st.plotly_chart(
-                gauge_chart(combined_pct, "Combined Score", gauge_color),
+                gauge_chart(combined_pct, "Bot Score", gauge_color),
                 use_container_width=True, key="gauge_combined",
             )
         with g_col2:
+            st.plotly_chart(
+                gauge_chart(dis_pct, "Disinfo Score", dis_color),
+                use_container_width=True, key="gauge_dis",
+            )
+        with g_col3:
             ml = result["ml"]
             st.plotly_chart(
                 gauge_chart(ml["pct"], "ML Model", "#6366f1"),
@@ -370,19 +407,24 @@ def render_results(result: dict, user: dict, tweets: list[dict]) -> None:
                 f"95% CI: {ml['lower']}% – {ml['upper']}%  "
                 f"(uncertainty: ±{round(ml['uncertainty']*100,1)}%)"
             )
-        with g_col3:
+        with g_col4:
             st.plotly_chart(
                 gauge_chart(h_pct, "Heuristic", "#64748b"),
                 use_container_width=True, key="gauge_heuristic",
             )
     else:
-        g_col1, g_col2 = st.columns(2)
+        g_col1, g_col2, g_col3 = st.columns(3)
         with g_col1:
             st.plotly_chart(
-                gauge_chart(combined_pct, "Bot Score (Heuristic)", gauge_color),
+                gauge_chart(combined_pct, "Bot Score", gauge_color),
                 use_container_width=True, key="gauge_single",
             )
         with g_col2:
+            st.plotly_chart(
+                gauge_chart(dis_pct, "Disinfo Score", dis_color),
+                use_container_width=True, key="gauge_dis",
+            )
+        with g_col3:
             st.info("No ML model trained yet. Run `ruzzianprop train` to enable ML scoring.", icon="ℹ️")
 
     # ── ML vs Heuristic bar ───────────────────────────────────────────────────
@@ -398,6 +440,20 @@ def render_results(result: dict, user: dict, tweets: list[dict]) -> None:
         st.plotly_chart(
             score_comparison_chart(ml_pct, h_pct),
             use_container_width=True, key="cmp_chart",
+        )
+
+    # ── Disinformation narrative breakdown ────────────────────────────────────
+    dis = result.get("dis", {})
+    if dis.get("top_narratives") or dis.get("state_media_share", 0) > 0 or dis.get("top_keywords"):
+        narratives_str = ", ".join(dis.get("top_narratives", [])[:5]) or "—"
+        keywords_str = "  |  ".join(f"`{k}`" for k in dis.get("top_keywords", [])[:8]) or "—"
+        sm_pct = round(dis.get("state_media_share", 0) * 100, 1)
+        st.error(
+            f"**Disinformation signals detected**  \n"
+            f"Narratives: **{narratives_str}**  \n"
+            f"Matched keywords: {keywords_str}  \n"
+            f"State media links: **{sm_pct}%** of tweets analysed",
+            icon="🚨",
         )
 
     st.divider()
