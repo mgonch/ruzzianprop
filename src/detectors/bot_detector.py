@@ -31,16 +31,17 @@ logger = logging.getLogger(__name__)
 
 # Default signal weights (override via config)
 DEFAULT_WEIGHTS = {
-    "account_age": 0.10,
-    "username_pattern": 0.08,
-    "profile_completeness": 0.08,
-    "tweet_frequency": 0.10,
-    "retweet_ratio": 0.10,
-    "follower_ratio": 0.10,
-    "content_similarity": 0.15,
-    "posting_time_pattern": 0.09,
-    "coordinated_behavior": 0.12,
-    "disinformation_keywords": 0.08,
+    "account_age": 0.08,
+    "username_pattern": 0.06,
+    "profile_completeness": 0.06,
+    "tweet_frequency": 0.08,
+    "retweet_ratio": 0.08,
+    "follower_ratio": 0.08,
+    "content_similarity": 0.12,
+    "posting_time_pattern": 0.07,
+    "coordinated_behavior": 0.10,
+    "disinformation_keywords": 0.13,
+    "state_media_links": 0.14,   # links to RT, Sputnik, TASS etc. — strongest state-actor signal
 }
 
 # Regex for random-username patterns
@@ -62,6 +63,11 @@ class BotDetector:
         self.bot_threshold = cfg.get("bot_threshold", 0.60)
         self.suspected_threshold = cfg.get("suspected_threshold", 0.40)
         self.keywords = keywords or {}
+        dis_cfg = (config or {}).get("disinformation", {})
+        self.state_media_domains: set[str] = set(dis_cfg.get("state_media_domains", [
+            "rt.com", "sputniknews.com", "ria.ru", "tass.ru",
+            "rbth.com", "pravda.ru", "vesti.ru",
+        ]))
         # Will be populated by analyse_corpus()
         self._corpus_texts: list[str] = []
         self._coordinated_groups: dict[str, list[str]] = {}
@@ -132,6 +138,7 @@ class BotDetector:
         signals["posting_time_pattern"] = self._score_posting_time(tweets)
         signals["coordinated_behavior"] = self._score_coordination(user)
         signals["disinformation_keywords"] = self._score_keywords(tweets)
+        signals["state_media_links"] = self._score_state_media_links(tweets)
 
         total = sum(
             signals[k] * self.weights.get(k, 0.0)
@@ -414,6 +421,42 @@ class BotDetector:
             return 0.4
         if ratio > 0.0:
             return 0.2
+        return 0.0
+
+    def _score_state_media_links(self, tweets: list[dict]) -> float:
+        """
+        Score based on proportion of tweets that contain links to known
+        Russian state media domains (RT, Sputnik, TASS, RIA, etc.).
+        Amplifying state media is a strong indicator of a state actor or
+        coordinated inauthentic behaviour even when the account is human-operated.
+        """
+        from urllib.parse import urlparse
+        if not tweets:
+            return 0.0
+        hits = 0
+        for t in tweets:
+            entities = t.get("entities") or {}
+            for url_obj in entities.get("urls") or []:
+                expanded = url_obj.get("expanded_url") or url_obj.get("url") or ""
+                try:
+                    domain = urlparse(expanded).netloc.lower().lstrip("www.")
+                    if any(
+                        domain == sm or domain.endswith("." + sm)
+                        for sm in self.state_media_domains
+                    ):
+                        hits += 1
+                        break  # Count once per tweet
+                except Exception:
+                    pass
+        ratio = hits / len(tweets)
+        if ratio > 0.5:
+            return 1.0
+        if ratio > 0.3:
+            return 0.8
+        if ratio > 0.1:
+            return 0.5
+        if ratio > 0.0:
+            return 0.3
         return 0.0
 
     # ------------------------------------------------------------------
