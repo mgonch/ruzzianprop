@@ -1,0 +1,93 @@
+# RuzzianProp Configuration
+
+twitter:
+  # Set via env vars: TWITTER_BEARER_TOKEN, TWITTER_API_KEY, etc.
+  # Or provide directly here (not recommended for security)
+  bearer_token: ""
+  api_key: ""
+  api_secret: ""
+  access_token: ""
+  access_secret: ""
+  max_results_per_query: 100
+
+bot_detection:
+  # Weight of each signal in the final bot score (must sum to 1.0)
+  weights:
+    account_age: 0.10
+    username_pattern: 0.08
+    profile_completeness: 0.08
+    tweet_frequency: 0.10
+    retweet_ratio: 0.10
+    follower_ratio: 0.10
+    content_similarity: 0.15
+    posting_time_pattern: 0.09
+    coordinated_behavior: 0.12
+    disinformation_keywords: 0.08
+
+  # Thresholds
+  bot_threshold: 0.60        # Score >= this => likely bot
+  suspected_threshold: 0.40  # Score >= this => suspected
+
+disinformation:
+  # Russian state-linked disinformation narrative keywords
+  keywords:
+    nato_narratives:
+      - "NATO expansion"
+      - "NATO aggression"
+      - "NATO provocation"
+      - "NATO threat"
+      - "NATO lies"
+    ukraine_narratives:
+      - "Zelensky nazi"
+      - "Kiev regime"
+      - "Kyiv regime"
+      - "denazification"
+      - "Ukraine biolabs"
+      - "Ukraine bioweapons"
+      - "ukrainian nazis"
+      - "azov battalion"
+      - "Ukraine coup"
+    election_narratives:
+      - "stolen election"
+      - "election fraud"
+      - "rigged election"
+      - "deep state"
+      - "globalist"
+    western_narratives:
+      - "western propaganda"
+      - "mainstream media lies"
+      - "fake news media"
+      - "george soros"
+      - "nwo globalist"
+    ira_hashtags:
+      - "#NoWar"
+      - "#IStandWithPutin"
+      - "#RussiaUkraineWar"
+      - "#NATOterrorists"
+      - "#GlobohomoAgenda"
+
+  # Known Russian state media domains
+  state_media_domains:
+    - rt.com
+    - sputniknews.com
+    - ria.ru
+    - tass.ru
+    - rbth.com
+    - pravda.ru
+    - vesti.ru
+
+network:
+  min_edge_weight: 2          # Minimum shared interactions to draw an edge
+  community_resolution: 1.0   # Louvain community detection resolution
+  max_nodes_display: 500      # Cap nodes in visualization for performance
+
+visualization:
+  output_dir: "./output"
+  static_format: "png"        # png or svg
+  interactive: true           # Generate interactive HTML network
+  node_size_by: "bot_score"   # bot_score, followers, or degree
+  color_scheme:
+    confirmed_bot: "#e74c3c"
+    suspected_bot: "#e67e22"
+    human: "#2ecc71"
+    unknown: "#95a5a6"
