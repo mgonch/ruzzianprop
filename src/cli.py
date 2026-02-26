@@ -256,6 +256,45 @@ def demo(output, accounts):
 
 
 # ------------------------------------------------------------------
+# gui command
+# ------------------------------------------------------------------
+
+@cli.command()
+@click.option("--port", default=8501, show_default=True, help="Port to run on.")
+@click.option("--host", default="localhost", show_default=True, help="Host address.")
+@click.option("--no-browser", is_flag=True, default=False, help="Don't open browser automatically.")
+def gui(port, host, no_browser):
+    """Launch the Streamlit web GUI for interactive account analysis."""
+    import subprocess
+    from pathlib import Path
+
+    app_path = Path(__file__).parent.parent / "gui" / "app.py"
+    if not app_path.exists():
+        console.print("[red]GUI app not found at gui/app.py[/red]")
+        raise SystemExit(1)
+
+    console.print(Panel(
+        f"[bold cyan]RuzzianProp GUI[/bold cyan]\n"
+        f"Launching at [link=http://{host}:{port}]http://{host}:{port}[/link]",
+        expand=False,
+    ))
+
+    cmd = [
+        "streamlit", "run", str(app_path),
+        "--server.port", str(port),
+        "--server.address", host,
+        "--theme.primaryColor", "#6366f1",
+        "--theme.backgroundColor", "#ffffff",
+        "--theme.secondaryBackgroundColor", "#f8fafc",
+        "--theme.textColor", "#1e293b",
+    ]
+    if no_browser:
+        cmd += ["--server.headless", "true"]
+
+    subprocess.run(cmd)
+
+
+# ------------------------------------------------------------------
 # train command
 # ------------------------------------------------------------------
 
