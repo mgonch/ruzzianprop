@@ -565,6 +565,18 @@ def main() -> None:
     config = load_config()
     render_sidebar(config)
 
+    # Top-level navigation
+    page = st.sidebar.radio(
+        "Page",
+        ["Account Analysis", "Network Explorer"],
+        index=0,
+        label_visibility="collapsed",
+    )
+
+    if page == "Network Explorer":
+        render_network_page(config)
+        return
+
     st.header("Account Analysis")
 
     tab_live, tab_manual, tab_history = st.tabs(
@@ -716,6 +728,283 @@ def main() -> None:
                     st.plotly_chart(fig, use_container_width=True)
         except Exception as e:
             st.error(f"Could not load label history: {e}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Network Explorer page
+# ─────────────────────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _build_network_cached(
+    records_json: str,
+    scores_json: str,
+    config_json: str,
+):
+    """Cache-friendly wrapper — takes JSON strings so Streamlit can hash them."""
+    import json as _json
+    records = _json.loads(records_json)
+    scores  = _json.loads(scores_json)
+    config  = _json.loads(config_json)
+    from gui.network_view import build_full_network
+    G, communities, summaries = build_full_network(records, scores, config)
+    # Serialise graph to dict for caching
+    return G, communities, summaries
+
+
+def render_network_page(config: dict) -> None:
+    from gui import network_view as nv
+    import json as _json
+
+    st.header("Network Explorer")
+    st.caption(
+        "Visualise how bot and disinfo accounts interact as a community. "
+        "Upload a JSON data file (same format as `ruzzianprop analyse --input`) "
+        "or use the Twitter API to collect a dataset first."
+    )
+
+    # ── Data source ───────────────────────────────────────────────────────────
+    with st.expander("Load dataset", expanded=True):
+        src_mode = st.radio(
+            "Data source",
+            ["Upload JSON file", "Use demo data"],
+            horizontal=True,
+        )
+
+        records: list[dict] = []
+        if src_mode == "Upload JSON file":
+            uploaded = st.file_uploader(
+                "Upload tweet records JSON",
+                type=["json"],
+                help="The JSON file produced by ruzzianprop analyse or ruzzianprop demo.",
+            )
+            if uploaded:
+                try:
+                    records = _json.load(uploaded)
+                    st.success(f"Loaded {len(records)} records.")
+                except Exception as e:
+                    st.error(f"Could not parse file: {e}")
+        else:
+            n_accs = st.slider("Synthetic accounts", 30, 200, 80, step=10)
+            if st.button("Generate demo data", type="primary"):
+                with st.spinner("Generating..."):
+                    from src.demo import generate_demo_data
+                    records = generate_demo_data(n_accounts=n_accs)
+                st.session_state["network_records"] = records
+                st.success(f"Generated {len(records)} records for {n_accs} accounts.")
+
+        if "network_records" in st.session_state and not records:
+            records = st.session_state["network_records"]
+
+    if not records:
+        st.info("Load or generate a dataset above to begin.", icon="📂")
+        return
+
+    # ── Score accounts ────────────────────────────────────────────────────────
+    with st.spinner("Scoring accounts & building graph..."):
+        from src.detectors.bot_detector import BotDetector
+        detector = BotDetector(
+            config=config,
+            keywords=config.get("disinformation", {}).get("keywords", {}),
+        )
+        scores = detector.score_all(records)
+        G, communities, summaries = build_full_network(records, scores, config)
+
+    if len(G) == 0:
+        st.warning("Graph is empty – no interaction edges found in the dataset.")
+        return
+
+    # ── Summary metrics strip ─────────────────────────────────────────────────
+    n_bots  = sum(1 for n in G.nodes() if G.nodes[n].get("classification") == "bot")
+    n_susp  = sum(1 for n in G.nodes() if G.nodes[n].get("classification") == "suspected")
+    n_human = sum(1 for n in G.nodes() if G.nodes[n].get("classification") == "human")
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    m1.metric("Accounts",   len(G))
+    m2.metric("Edges",      G.number_of_edges())
+    m3.metric("Communities",len(communities))
+    m4.metric("Bots",       n_bots,  delta=None)
+    m5.metric("Suspected",  n_susp,  delta=None)
+    m6.metric("Humans",     n_human, delta=None)
+
+    st.divider()
+
+    # ── Controls ──────────────────────────────────────────────────────────────
+    ctrl1, ctrl2, ctrl3, ctrl4 = st.columns(4)
+    with ctrl1:
+        color_by = st.selectbox(
+            "Colour nodes by",
+            ["classification", "community", "bot_score"],
+            index=0,
+        )
+    with ctrl2:
+        size_by = st.selectbox(
+            "Node size by",
+            ["pagerank", "followers", "tweets", "uniform"],
+            index=0,
+        )
+    with ctrl3:
+        layout_algo = st.selectbox(
+            "Layout",
+            ["community", "spring", "kamada_kawai", "circular"],
+            index=0,
+        )
+    with ctrl4:
+        min_edge = st.number_input(
+            "Min edge weight",
+            min_value=1, max_value=10, value=1, step=1,
+        )
+
+    # ── Compute layout (cached per algo) ─────────────────────────────────────
+    @st.cache_data(show_spinner=False)
+    def _layout(_G_nodes, _G_edges, _communities_items, algo):
+        """Wrap layout computation for caching."""
+        # Rebuild minimal graph for layout
+        _G = nx.DiGraph()
+        _G.add_nodes_from(_G_nodes)
+        _G.add_edges_from(_G_edges)
+        _comm = dict(_communities_items)
+        return nv.compute_layout(_G, _comm, algorithm=algo)
+
+    import networkx as nx
+    pos = _layout(
+        list(G.nodes(data=True)),
+        list(G.edges(data=True)),
+        list(communities.items()),
+        layout_algo,
+    )
+
+    # ── Main graph ────────────────────────────────────────────────────────────
+    st.subheader("Interaction Graph")
+    st.caption(
+        "**Nodes** = accounts (size = PageRank influence). "
+        "**Edges** = interactions: retweets (red), mentions (grey), co-hashtag (purple dashed). "
+        "Hover any node for full details."
+    )
+    graph_fig = nv.network_graph(
+        G, communities, pos,
+        color_by=color_by,
+        size_by=size_by,
+        min_edge_weight=int(min_edge),
+        height=680,
+    )
+    st.plotly_chart(graph_fig, use_container_width=True, key="main_network")
+
+    st.divider()
+
+    # ── Community breakdown ───────────────────────────────────────────────────
+    comm_col, sun_col = st.columns([1, 1])
+    with comm_col:
+        st.subheader("Community Summary")
+        if summaries:
+            st.plotly_chart(
+                nv.community_stats_bars(summaries),
+                use_container_width=True, key="comm_bars",
+            )
+
+            # Expandable community details
+            with st.expander("Community details"):
+                for s in sorted(summaries, key=lambda x: -x["size"])[:10]:
+                    top_names = ", ".join(
+                        "@" + (G.nodes[u].get("username") or u)
+                        for u in s.get("top_accounts", [])
+                        if G.has_node(u)
+                    )
+                    bridge_names = ", ".join(
+                        "@" + (G.nodes[u].get("username") or u)
+                        for u in s.get("bridge_accounts", [])
+                        if G.has_node(u)
+                    )
+                    clf_str = " | ".join(
+                        f"{k}: {v}" for k, v in s.get("classifications", {}).items()
+                    )
+                    st.markdown(
+                        f"**Community {s['community_id']}** — "
+                        f"{s['size']} accounts | avg bot score: "
+                        f"**{s['avg_bot_score_pct']:.1f}%**  \n"
+                        f"Classifications: {clf_str}  \n"
+                        f"Top accounts (by PageRank): {top_names}  \n"
+                        f"Bridge accounts: {bridge_names}"
+                    )
+                    if s.get("top_narratives"):
+                        st.caption("Narratives: " + ", ".join(s["top_narratives"]))
+                    st.divider()
+
+    with sun_col:
+        st.subheader("Community Sunburst")
+        st.caption("Inner ring = community (colour = avg bot score). Outer ring = top accounts.")
+        st.plotly_chart(
+            nv.community_sunburst(G, communities),
+            use_container_width=True, key="sunburst",
+        )
+
+    st.divider()
+
+    # ── Activity timeline ─────────────────────────────────────────────────────
+    st.subheader("Activity Timeline")
+    bin_h = st.select_slider(
+        "Time bin size (hours)",
+        options=[1, 3, 6, 12, 24],
+        value=6,
+    )
+    st.plotly_chart(
+        nv.activity_timeline(records, scores, bin_hours=bin_h),
+        use_container_width=True, key="timeline",
+    )
+
+    st.divider()
+
+    # ── Coordination heatmap ──────────────────────────────────────────────────
+    st.subheader("Coordination Heatmap")
+    st.caption(
+        "Each row is an account; columns are hours of the day (UTC). "
+        "A nearly-uniform row with activity across all 24 hours signals an automated account. "
+        "Vertical stripes indicate coordinated bursts (many accounts posting at the same hour)."
+    )
+    top_n_heat = st.slider("Accounts to show", 10, 60, 30, step=5)
+    st.plotly_chart(
+        nv.coordination_heatmap(records, scores, top_n=top_n_heat),
+        use_container_width=True, key="heatmap",
+    )
+
+    st.divider()
+
+    # ── Narrative bar ─────────────────────────────────────────────────────────
+    st.subheader("Disinformation Narratives")
+    st.caption("Weighted by account classification: bots amplify narratives 2×, suspected 1.2×, humans 0.5×.")
+    st.plotly_chart(
+        nv.narrative_bar(G),
+        use_container_width=True, key="narratives",
+    )
+
+    st.divider()
+
+    # ── Top accounts table ────────────────────────────────────────────────────
+    st.subheader("Top Accounts by Network Influence")
+    top_df = nv.top_accounts_dataframe(G, communities, n=100)
+    if not top_df.empty:
+        # Colour-code rows by classification
+        def _row_color(row):
+            c = {"bot": "background-color:#fee2e2",
+                 "suspected": "background-color:#fef9c3",
+                 "human": "background-color:#dcfce7"}.get(row["class"], "")
+            return [c] * len(row)
+
+        st.dataframe(
+            top_df.style.apply(_row_color, axis=1),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "bot_score_%": st.column_config.ProgressColumn(
+                    "Bot score %", min_value=0, max_value=100, format="%.1f%%"
+                ),
+                "pagerank": st.column_config.NumberColumn("PageRank", format="%.6f"),
+            },
+        )
+
+        csv = top_df.to_csv(index=False).encode()
+        st.download_button(
+            "Download as CSV", data=csv,
+            file_name="network_top_accounts.csv", mime="text/csv",
+        )
 
 
 if __name__ == "__main__":
